@@ -1,0 +1,271 @@
+diff --git a/src/endpoints/backends/chat-completions.js b/src/endpoints/backends/chat-completions.js
+index 71e031c2c..538a85e7f 100644
+--- a/src/endpoints/backends/chat-completions.js
++++ b/src/endpoints/backends/chat-completions.js
+@@ -1,5 +1,6 @@
+ /* eslint-disable dot-notation */
+ import process from 'node:process';
++import path from 'node:path';
+ import util from 'node:util';
+ import express from 'express';
+ import fetch from 'node-fetch';
+@@ -23,6 +24,9 @@ import {
+ } from '../../constants.js';
+ import {
+     forwardFetchResponse,
++    forwardFetchResponseCapture,
++    isUsageCaptureEnabled,
++    hashPromptPayload,
+     getConfigValue,
+     tryParse,
+     uuidv4,
+@@ -1080,6 +1084,9 @@ async function sendDeepSeekRequest(request, response) {
+             bodyParams['reasoning_effort'] = request.body.reasoning_effort;
+         }
+ 
++        // dsh-usage-monitor: usage capture (env var or flag file)
++        const usageCaptureEnabled = isUsageCaptureEnabled(request.user.directories.root);
++
+         const requestBody = {
+             'messages': processedMessages,
+             'model': request.body.model,
+@@ -1092,6 +1099,9 @@ async function sendDeepSeekRequest(request, response) {
+             'stop': request.body.stop,
+             'seed': request.body.seed,
+             'thinking': { type: request.body.include_reasoning ? 'enabled' : 'disabled' },
++            ...(usageCaptureEnabled && request.body.stream && process.env.ST_USAGE_STREAM_OPTIONS !== '0'
++                ? { 'stream_options': { 'include_usage': true } }
++                : {}),
+             ...bodyParams,
+         };
+ 
+@@ -1110,7 +1120,22 @@ async function sendDeepSeekRequest(request, response) {
+         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
+ 
+         if (request.body.stream) {
+-            await forwardFetchResponse(generateResponse, response);
++            if (usageCaptureEnabled) {
++                const usageLogPath = path.join(request.user.directories.root, 'st-usage.jsonl');
++                await forwardFetchResponseCapture(generateResponse, response, {
++                    source: 'deepseek',
++                    model: request.body.model || '',
++                    endpoint: apiUrl + '/chat/completions',
++                    file: String(request.body.file || request.body.file_name || 'chat'),
++                    n_msgs: Array.isArray(processedMessages) ? processedMessages.length : null,
++                    payload_hash: hashPromptPayload(processedMessages),
++                    stream: true,
++                    max_tokens: request.body.max_tokens ?? null,
++                    usageLogPath: usageLogPath,
++                });
++            } else {
++                await forwardFetchResponse(generateResponse, response);
++            }
+         } else {
+             if (!generateResponse.ok) {
+                 const errorText = await generateResponse.text();
+@@ -2569,6 +2594,14 @@ router.post('/generate', async function (request, response) {
+             ...bodyParams,
+         };
+ 
++        // dsh-usage-monitor: ask upstream to include usage in the stream tail (env var or flag file)
++        const usageCaptureEnabled = isUsageCaptureEnabled(request.user.directories.root);
++        if (usageCaptureEnabled && process.env.ST_USAGE_STREAM_OPTIONS !== '0' &&
++            request.body.stream &&
++            ['custom', 'openai', 'deepseek'].includes(request.body.chat_completion_source)) {
++            requestBody.stream_options = { include_usage: true };
++        }
++
+         if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
+             excludeKeysByYaml(requestBody, request.body.custom_exclude_body);
+         }
+@@ -2591,6 +2624,20 @@ router.post('/generate', async function (request, response) {
+ 
+         if (request.body.stream) {
+             console.info('Streaming request in progress');
++            if (usageCaptureEnabled) {
++                const usageLogPath = path.join(request.user.directories.root, 'st-usage.jsonl');
++                return await forwardFetchResponseCapture(fetchResponse, response, {
++                    source: request.body.chat_completion_source || '',
++                    model: request.body.model || '',
++                    endpoint: endpointUrl,
++                    file: String(request.body.file || request.body.file_name || 'chat'),
++                    n_msgs: Array.isArray(request.body.messages) ? request.body.messages.length : null,
++                    payload_hash: hashPromptPayload(request.body.messages),
++                    stream: Boolean(request.body.stream),
++                    max_tokens: request.body.max_tokens ?? null,
++                    usageLogPath: usageLogPath,
++                });
++            }
+             return await forwardFetchResponse(fetchResponse, response);
+         }
+ 
+diff --git a/src/util.js b/src/util.js
+index 98c1e9d21..4f0a75011 100644
+--- a/src/util.js
++++ b/src/util.js
+@@ -755,6 +755,165 @@ export async function forwardFetchResponse(from, to) {
+     }
+ }
+ 
++
++/**
++ * dsh-usage-monitor: short fingerprint of the outgoing message payload.
++ * Two requests with the same hash sent the exact same prompt
++ * (i.e. a re-roll / swipe of the same turn, not a new turn).
++ * @param {Array<{role?: string, content?: any}>} messages Outgoing messages
++ * @returns {string|null} 12 hex chars, or null when not computable
++ */
++export function hashPromptPayload(messages) {
++    try {
++        if (!Array.isArray(messages) || messages.length === 0) {
++            return null;
++        }
++        const hash = crypto.createHash('sha1');
++        for (const message of messages) {
++            hash.update(String((message && message.role) || ''));
++            hash.update('\u0000');
++            const content = message && message.content;
++            hash.update(typeof content === 'string' ? content : JSON.stringify(content ?? ''));
++            hash.update('\u0001');
++        }
++        return hash.digest('hex').slice(0, 12);
++    } catch {
++        return null;
++    }
++}
++
++/**
++ * dsh-usage-monitor: capture is enabled when ST_USAGE_CAPTURE=1 is set OR a flag file
++ * (st-usage.capture) exists in the user's data root. The flag file allows toggling the
++ * monitor on/off without restarting the server.
++ * @param {string} userRoot Path to the user's data root
++ * @returns {boolean} True when usage capture is enabled
++ */
++export function isUsageCaptureEnabled(userRoot) {
++    if (process.env.ST_USAGE_CAPTURE === '1') {
++        return true;
++    }
++    try {
++        return Boolean(userRoot) && fs.existsSync(path.join(userRoot, 'st-usage.capture'));
++    } catch {
++        return false;
++    }
++}
++
++export async function forwardFetchResponseCapture(from, to, meta) {
++    const usageLogPath = meta && meta.usageLogPath;
++    const debugLogPath = usageLogPath ? usageLogPath + '.debug.log' : null;
++    const dbg = (msg) => {
++        if (!debugLogPath) return;
++        try { fs.appendFileSync(debugLogPath, new Date().toISOString() + ' [capture] ' + msg + '\n', 'utf8'); } catch { /* ignore */ }
++    };
++    dbg('start status=' + from.status + ' model=' + ((meta && meta.model) || '') + ' n_msgs=' + ((meta && meta.n_msgs) ?? '?') + ' stream=' + ((meta && meta.stream) ?? '?'));
++    let statusCode = from.status;
++    let statusText = from.statusText;
++
++    if (statusCode === 401) {
++        statusCode = 400;
++        statusText = 'Bad Request';
++    }
++
++    to.statusCode = statusCode;
++    to.statusMessage = statusText;
++
++    if (!from.ok) {
++        try {
++            const rawErrorText = await from.text();
++            console.warn('[usage-mon] upstream_error ' + from.status + ' ' + String(rawErrorText || '').slice(0, 200));
++            to.end(rawErrorText, 'utf-8');
++        } catch (e) {
++            to.end();
++        }
++        return;
++    }
++
++    if (!from.body) {
++        to.end();
++        return;
++    }
++
++    return new Promise(function (resolve, reject) {
++        let raw = '';
++        from.body.on('data', function (chunk) {
++            try {
++                to.write(chunk);
++            } catch (e) { /* ignore */ }
++            raw += chunk.toString('utf8');
++        });
++        from.body.on('end', function () {
++            try {
++                to.end();
++            } catch (e) { /* ignore */ }
++            try {
++                const rec = parseUsageRecord(raw, meta);
++                if (rec && usageLogPath) {
++                    fs.appendFileSync(usageLogPath, JSON.stringify(rec) + '\n', 'utf8');
++                    console.info('[usage-mon] record hit=' + rec.hit + ' miss=' + rec.miss + ' prompt=' + rec.prompt + ' completion=' + rec.completion + ' file=' + (rec.file || ''));
++                    dbg('end bytes=' + raw.length + ' parsed=yes hit=' + rec.hit + ' miss=' + rec.miss + ' prompt=' + rec.prompt);
++                } else {
++                    dbg('end bytes=' + raw.length + ' parsed=NO tail=' + JSON.stringify(String(raw).slice(-240)));
++                }
++            } catch (e) {
++                console.warn('[usage-mon] parse_failed', String((e && e.message) || e));
++            }
++            resolve();
++        });
++        from.body.on('error', function (e) {
++            try {
++                to.end();
++            } catch (err) { /* ignore */ }
++            reject(e);
++        });
++    });
++}
++
++function parseUsageRecord(raw, meta) {
++    if (!raw) return null;
++    let hit = tryNum(/prompt_cache_hit_tokens"?\s*:\s*(\d+)/.exec(raw));
++    let miss = tryNum(/prompt_cache_miss_tokens"?\s*:\s*(\d+)/.exec(raw));
++    const prompt = tryNum(/"prompt_tokens"?\s*:\s*(\d+)/.exec(raw));
++    const completion = tryNum(/"completion_tokens"?\s*:\s*(\d+)/.exec(raw));
++    const total = tryNum(/"total_tokens"?\s*:\s*(\d+)/.exec(raw));
++    if (prompt === null && hit === null && miss === null && total === null) return null;
++    // OpenAI-compat: cached_tokens inside prompt_tokens_details
++    let cached = tryNum(/"cached_tokens"\s*:\s*(\d+)/.exec(raw));
++    if (cached !== null && miss === null && prompt !== null) {
++        miss = Math.max(prompt - cached, 0);
++    }
++    if (hit === null && cached !== null) {
++        hit = cached;
++    }
++    // keep a short raw snippet of the usage object for forensics
++    let usageRaw = null;
++    const um = /"usage"\s*:\s*(\{[^}]{0,700})/.exec(raw);
++    if (um) usageRaw = um[1].slice(0, 700);
++    return {
++        t: new Date().toISOString(),
++        source: meta && meta.source,
++        model: meta && meta.model,
++        endpoint: meta && meta.endpoint,
++        file: meta && meta.file,
++        n_msgs: meta && meta.n_msgs,
++        payload_hash: meta && meta.payload_hash,
++        stream: meta && meta.stream,
++        max_tokens: meta && meta.max_tokens,
++        hit: hit,
++        miss: miss,
++        cached: cached,
++        prompt: prompt,
++        completion: completion,
++        total: total,
++        usage_raw: usageRaw,
++    };
++}
++
++function tryNum(m) {
++    return m && m[1] !== undefined && /^\d+$/.test(m[1]) ? Number(m[1]) : null;
++}
++
+ /**
+  * Makes an HTTP/2 request to the specified endpoint.
+  *

@@ -1,0 +1,8 @@
+# 统一行尾：仓库内一律 LF（.cmd/.bat 例外，cmd 需要 CRLF）
+* text=auto eol=lf
+*.ps1 text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.zip binary

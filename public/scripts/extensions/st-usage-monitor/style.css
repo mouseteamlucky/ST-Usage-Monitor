@@ -1,0 +1,53 @@
+/* ===== ST Usage Monitor — 悬浮球 + 面板 ===== */
+#stu-widget { position: fixed; right: 0; top: 58%; z-index: 41000; font-size: 13px; font-family: var(--mainFontFamily, inherit); }
+#stu-pill {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; width: 52px; padding: 10px 4px 8px;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.4)); border-right: none; border-radius: 12px 0 0 12px;
+  background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1e1e2e) 88%, transparent);
+  backdrop-filter: blur(8px); color: var(--SmartThemeBodyColor, #ddd); cursor: pointer;
+  box-shadow: -2px 2px 8px var(--SmartThemeShadowColor, rgba(0,0,0,.35)); transition: filter .15s ease; user-select: none;
+}
+#stu-pill:hover { filter: brightness(1.15); }
+#stu-pill .stu-gauge { font-size: 17px; line-height: 1; }
+#stu-pill .stu-pct { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#stu-pill .stu-vlabel { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 2px; font-size: 11px; opacity: .85; }
+#stu-pill .stu-mini { width: 30px; height: 4px; border-radius: 3px; background: rgba(224,87,74,.5); overflow: hidden; }
+#stu-pill .stu-mini i { display: block; height: 100%; background: #37b26b; width: 0; }
+.stu-good { color: #37b26b; } .stu-warn { color: #d6b24c; } .stu-bad { color: #e0574a; }
+
+#stu-panel {
+  position: fixed; right: 62px; top: 12vh; width: min(680px, 92vw); max-height: 78vh; overflow: auto;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.4)); border-radius: 12px;
+  background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1e1e2e) 96%, transparent);
+  backdrop-filter: blur(10px); color: var(--SmartThemeBodyColor, #ddd); z-index: 41005;
+  box-shadow: 0 8px 32px var(--SmartThemeShadowColor, rgba(0,0,0,.5)); padding: 12px 14px 16px;
+}
+#stu-panel[hidden] { display: none; }
+.stu-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.stu-head .stu-title { font-weight: 700; font-size: 15px; }
+.stu-head .stu-sub { font-size: 12px; opacity: .75; flex: 1; }
+.stu-x { cursor: pointer; font-size: 18px; line-height: 1; opacity: .7; padding: 0 4px; }
+.stu-x:hover { opacity: 1; }
+.stu-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(122px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.stu-card { border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.25)); border-radius: 9px; padding: 7px 9px; }
+.stu-card .k { font-size: 11px; opacity: .7; }
+.stu-card .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 1px; }
+.stu-card .s { font-size: 11px; opacity: .65; margin-top: 1px; }
+.stu-ctl { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; font-size: 12px; }
+.stu-ctl label { display: flex; gap: 5px; align-items: center; opacity: .9; }
+.stu-ctl input[type=number] { width: 74px; }
+.stu-ctl input, .stu-ctl select { background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #111) 70%, #000 12%); color: inherit; border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.4)); border-radius: 6px; padding: 3px 5px; font-size: 12px; }
+#stu-chart { width: 100%; display: block; margin-bottom: 6px; }
+.stu-legend { display: flex; gap: 14px; font-size: 11px; opacity: .75; margin-bottom: 10px; }
+.stu-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.stu-tblwrap { max-height: 320px; overflow: auto; border-top: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.25)); }
+.stu-tbl { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.stu-tbl th, .stu-tbl td { padding: 3px 5px; border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.18)); text-align: right; white-space: nowrap; }
+.stu-tbl th:first-child, .stu-tbl td:first-child { text-align: left; }
+.stu-tbl th { opacity: .7; font-weight: 500; position: sticky; top: 0; background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1e1e2e) 96%, transparent); }
+.stu-hit { color: #37b26b; } .stu-miss { color: #e0574a; }
+.stu-note { font-size: 12px; opacity: .8; padding: 6px 0; }
+.stu-btn { cursor: pointer; border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.4)); border-radius: 7px; padding: 3px 9px; background: transparent; color: inherit; font-size: 12px; }
+.stu-btn:hover { filter: brightness(1.2); }
+.stu-sw { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.stu-badge { font-size: 11px; padding: 1px 6px; border-radius: 99px; border: 1px solid currentColor; }

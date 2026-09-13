@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SillyTavern 消耗 / 缓存命中看板</title>
+<style>
+  :root { --bg:#15161a; --card:#1e2027; --line:#2c2f38; --fg:#e8eaed; --dim:#9aa0aa;
+          --hit:#37b26b; --miss:#e0574a; --out:#4a8fe0; --acc:#d6b24c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 "Segoe UI",system-ui,"Microsoft YaHei",sans-serif; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  h1 { font-size:16px; margin:0 12px 0 0; font-weight:600; }
+  .muted { color:var(--dim); font-size:12px; }
+  main { padding:16px 18px 40px; max-width:1400px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .card .k { font-size:12px; color:var(--dim); }
+  .card .v { font-size:19px; font-weight:600; margin-top:2px; font-variant-numeric:tabular-nums; }
+  .card .s { font-size:11px; color:var(--dim); margin-top:2px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:14px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  label { font-size:12px; color:var(--dim); display:flex; gap:6px; align-items:center; }
+  input[type=number], input[type=text], select { background:#12131a; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:4px 6px; font:12px "Segoe UI",sans-serif; }
+  input[type=number] { width:86px; }
+  canvas { width:100%; display:block; }
+  table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+  th,td { padding:4px 6px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--dim); font-weight:500; position:sticky; top:0; background:var(--card); }
+  .tblwrap { max-height:420px; overflow:auto; }
+  .pill { padding:1px 6px; border-radius:99px; font-size:11px; }
+  .p-hit { background:rgba(55,178,107,.18); color:var(--hit); }
+  .p-miss { background:rgba(224,87,74,.18); color:var(--miss); }
+  #drop { border:1px dashed var(--line); border-radius:10px; padding:18px; text-align:center; color:var(--dim); }
+  #drop.on { border-color:var(--acc); color:var(--acc); }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--dim); margin-top:6px; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>消耗 / 缓存命中看板</h1>
+  <span class="muted" id="src">等待数据…</span>
+  <span style="flex:1"></span>
+  <span class="muted" id="cap"></span>
+</header>
+<main>
+  <div class="cards">
+    <div class="card"><div class="k">请求数</div><div class="v" id="k_req">-</div><div class="s" id="k_span">-</div></div>
+    <div class="card"><div class="k">命中率（hit / prompt）</div><div class="v" id="k_rate">-</div><div class="s" id="k_hitmiss">-</div></div>
+    <div class="card"><div class="k">输入 token 合计</div><div class="v" id="k_prompt">-</div><div class="s" id="k_avg">-</div></div>
+    <div class="card"><div class="k">输出 token 合计</div><div class="v" id="k_out">-</div><div class="s">completion</div></div>
+    <div class="card"><div class="k">估算花费</div><div class="v" id="k_cost">-</div><div class="s" id="k_costsub">按下方单价</div></div>
+    <div class="card"><div class="k">若全部未命中会多花</div><div class="v" id="k_save">-</div><div class="s">= 缓存帮你省下的</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <label>单价（元 / 百万 token） 命中 <input type="number" id="p_hit" step="0.01" value="0.02"></label>
+      <label>未命中 <input type="number" id="p_miss" step="0.01" value="1"></label>
+      <label>输出 <input type="number" id="p_out" step="0.01" value="4"></label>
+      <span class="muted">deepseek-flash：空闲 0.02/1/4 · 高峰 0.04/2/8</span>
+      <span style="flex:1"></span>
+      <label>范围 <select id="f_group">
+        <option value="all">全部请求</option>
+        <option value="new">仅新回合</option>
+        <option value="reroll">仅重 roll（同 payload）</option>
+      </select></label>
+      <label>最近 <input type="number" id="f_last" value="200" min="5" step="5"> 条</label>
+      <label><input type="checkbox" id="f_auto" checked> 自动刷新(5s)</label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <canvas id="chart" height="220"></canvas>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--hit)"></span>命中 hit</span>
+      <span><span class="sw" style="background:var(--miss)"></span>未命中 miss</span>
+      <span><span class="sw" style="background:var(--out)"></span>输出 completion</span>
+      <span id="tip" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div id="drop">把 <b>st-usage.jsonl</b> 拖到这里（或用 <input type="file" id="file" accept=".jsonl,.json,.txt"> 选择）—— 通过 http 打开时不需要这一步，会自动读。</div>
+    <div class="tblwrap"><table id="tbl">
+      <thead><tr><th>时间</th><th>模型</th><th>消息数</th><th>prompt</th><th>hit</th><th>miss</th><th>命中率</th><th>输出</th><th>成本(元)</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n === null || n === undefined || Number.isNaN(n)) ? '-' : Number(n).toLocaleString();
+const yuan = (n) => (n === null || n === undefined) ? '-' : ('¥' + Number(n).toFixed(4));
+let RECORDS = [];
+
+function loadPrices() {
+  try {
+    const p = JSON.parse(localStorage.getItem('stUsagePrices') || 'null');
+    if (p) { $('p_hit').value = p.hit; $('p_miss').value = p.miss; $('p_out').value = p.out; }
+  } catch {}
+}
+function savePrices() {
+  localStorage.setItem('stUsagePrices', JSON.stringify({ hit: $('p_hit').value, miss: $('p_miss').value, out: $('p_out').value }));
+}
+function parseJsonl(text) {
+  const out = [];
+  for (const line of String(text || '').split('\n')) {
+    const s = line.trim();
+    if (!s) continue;
+    try { const o = JSON.parse(s); if (o && (o.prompt != null || o.hit != null || o.miss != null)) out.push(o); } catch {}
+  }
+  return out;
+}
+// 标注"与上一条同 payload"（= 重 roll / 滑切，不是新回合）；服务端 payload_hash 字段
+function annotate(recs) {
+  let prev = null;
+  return recs.map((r) => {
+    const isReroll = Boolean(prev && r.payload_hash && prev.payload_hash === r.payload_hash);
+    prev = r;
+    return Object.assign({}, r, { isReroll });
+  });
+}
+function applyRange(recs) {
+  const g = $('f_group').value;
+  let r = annotate(recs.slice());
+  if (g === 'new') r = r.filter(x => !x.isReroll);
+  if (g === 'reroll') r = r.filter(x => x.isReroll);
+  const last = Math.max(5, Number($('f_last').value) || 200);
+  if (r.length > last) r = r.slice(-last);
+  return r;
+}
+function calc(recs) {
+  const ph = Number($('p_hit').value) / 1e6, pm = Number($('p_miss').value) / 1e6, po = Number($('p_out').value) / 1e6;
+  let prompt = 0, hit = 0, miss = 0, comp = 0, cost = 0, costNoCache = 0;
+  for (const r of recs) {
+    const p = r.prompt ?? ((r.hit ?? 0) + (r.miss ?? 0));
+    const h = r.hit ?? 0, m = r.miss ?? Math.max(p - h, 0), c = r.completion ?? 0;
+    prompt += p; hit += h; miss += m; comp += c;
+    cost += h * ph + m * pm + c * po;
+    costNoCache += p * pm + c * po;
+  }
+  return { prompt, hit, miss, comp, cost, costNoCache, n: recs.length };
+}
+function draw(recs) {
+  const cv = $('chart'), ctx = cv.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const wCss = cv.clientWidth, hCss = 220;
+  cv.width = wCss * dpr; cv.height = hCss * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, wCss, hCss);
+  if (!recs.length) { ctx.fillStyle = '#9aa0aa'; ctx.font = '13px sans-serif'; ctx.fillText('暂无数据', 10, 24); return; }
+  const pad = { l: 58, r: 10, t: 10, b: 22 };
+  const max = Math.max(...recs.map(r => (r.prompt ?? ((r.hit ?? 0) + (r.miss ?? 0))) + (r.completion ?? 0))) || 1;
+  const plotW = wCss - pad.l - pad.r, plotH = hCss - pad.t - pad.b;
+  const y = (v) => pad.t + plotH - (v / max) * plotH;
+  ctx.strokeStyle = '#2c2f38'; ctx.fillStyle = '#9aa0aa'; ctx.font = '11px sans-serif';
+  for (let i = 0; i <= 4; i++) {
+    const v = max * i / 4, yy = y(v);
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(wCss - pad.r, yy); ctx.stroke();
+    ctx.fillText(Math.round(v / 1000) + 'k', 6, yy + 4);
+  }
+  const bw = Math.max(2, Math.min(28, plotW / recs.length - 2));
+  recs.forEach((r, i) => {
+    const p = r.prompt ?? ((r.hit ?? 0) + (r.miss ?? 0));
+    const h = r.hit ?? 0, m = r.miss ?? Math.max(p - h, 0), c = r.completion ?? 0;
+    const x = pad.l + (i + 0.5) * (plotW / recs.length) - bw / 2;
+    let base = 0;
+    const seg = (v, col) => { if (v <= 0) return; ctx.fillStyle = col; ctx.fillRect(x, y(base + v), bw, y(base) - y(base + v)); base += v; };
+    seg(m, '#e0574a'); seg(h, '#37b26b'); seg(c, '#4a8fe0');
+  });
+  ctx.fillStyle = '#9aa0aa';
+  const first = (recs[0].t || '').slice(5, 16).replace('T', ' ');
+  const last = (recs[recs.length - 1].t || '').slice(5, 16).replace('T', ' ');
+  ctx.fillText(first, pad.l, hCss - 6);
+  const tw = ctx.measureText(last).width;
+  ctx.fillText(last, wCss - pad.r - tw, hCss - 6);
+}
+function render() {
+  const recs = applyRange(RECORDS);
+  const c = calc(recs);
+  $('k_req').textContent = fmt(c.n);
+  if (recs.length) {
+    const t0 = (recs[0].t || '').slice(5, 16).replace('T', ' '), t1 = (recs[recs.length - 1].t || '').slice(5, 16).replace('T', ' ');
+    $('k_span').textContent = t0 + ' → ' + t1;
+  }
+  const rate = c.prompt ? (c.hit / c.prompt * 100) : 0;
+  $('k_rate').textContent = c.prompt ? rate.toFixed(1) + '%' : '-';
+  $('k_hitmiss').textContent = 'hit ' + fmt(c.hit) + ' / miss ' + fmt(c.miss);
+  $('k_prompt').textContent = fmt(c.prompt);
+  $('k_avg').textContent = c.n ? ('平均 ' + fmt(Math.round(c.prompt / c.n)) + ' / 次') : '-';
+  $('k_out').textContent = fmt(c.comp);
+  $('k_cost').textContent = yuan(c.cost);
+  $('k_save').textContent = yuan(Math.max(c.costNoCache - c.cost, 0));
+  draw(recs);
+  const tb = $('tbl').querySelector('tbody');
+  tb.innerHTML = '';
+  for (const r of recs.slice(-60).reverse()) {
+    const p = r.prompt ?? ((r.hit ?? 0) + (r.miss ?? 0));
+    const h = r.hit ?? 0, m = r.miss ?? Math.max(p - h, 0), cmp = r.completion ?? 0;
+    const ph = Number($('p_hit').value) / 1e6, pm = Number($('p_miss').value) / 1e6, po = Number($('p_out').value) / 1e6;
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + (r.isReroll ? '↻ ' : '') + (r.t || '').slice(5, 19).replace('T', ' ') + '</td>' +
+      '<td>' + (r.model || '-') + '</td>' +
+      '<td>' + (r.n_msgs ?? '-') + '</td>' +
+      '<td>' + fmt(p) + '</td>' +
+      '<td class="p-hit">' + fmt(h) + '</td>' +
+      '<td class="p-miss">' + fmt(m) + '</td>' +
+      '<td>' + (p ? (h / p * 100).toFixed(0) + '%' : '-') + '</td>' +
+      '<td>' + fmt(cmp) + '</td>' +
+      '<td>' + yuan(h * ph + m * pm + cmp * po) + '</td>';
+    tb.appendChild(tr);
+  }
+}
+async function tick() {
+  if (!location.protocol.startsWith('http')) return;
+  try {
+    const res = await fetch('/usage.jsonl?ts=' + Date.now(), { cache: 'no-store' });
+    const txt = await res.text();
+    RECORDS = parseJsonl(txt);
+    $('src').textContent = '数据源 /usage.jsonl · ' + RECORDS.length + ' 条 · 更新于 ' + new Date().toLocaleTimeString();
+    render();
+  } catch (e) { $('src').textContent = '读取失败: ' + e.message; }
+}
+async function meta() {
+  if (!location.protocol.startsWith('http')) return;
+  try {
+    const m = await (await fetch('/meta?ts=' + Date.now(), { cache: 'no-store' })).json();
+    $('cap').innerHTML = '采集开关 st-usage.capture：' + (m.captureEnabled ? '<span class="p-hit pill">已开启</span>' : '<span class="p-miss pill">未开启</span>') +
+      ' · 日志 ' + (m.usageFile.exists ? (Math.round(m.usageFile.size / 1024) + ' KB') : '未生成');
+  } catch {}
+}
+function loadFromText(text, label) {
+  RECORDS = parseJsonl(text);
+  $('src').textContent = '数据源 ' + label + ' · ' + RECORDS.length + ' 条';
+  render();
+}
+for (const id of ['p_hit', 'p_miss', 'p_out']) $(id).addEventListener('input', () => { savePrices(); render(); });
+for (const id of ['f_group', 'f_last']) $(id).addEventListener('change', render);
+$('file').addEventListener('change', (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  const rd = new FileReader(); rd.onload = () => loadFromText(rd.result, f.name); rd.readAsText(f);
+});
+const drop = $('drop');
+['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('on'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('on'); }));
+drop.addEventListener('drop', (e) => {
+  const f = e.dataTransfer.files[0]; if (!f) return;
+  const rd = new FileReader(); rd.onload = () => loadFromText(rd.result, f.name); rd.readAsText(f);
+});
+loadPrices();
+setInterval(() => { if ($('f_auto').checked) { tick(); meta(); } }, 5000);
+tick(); meta();
+</script>
+</body>
+</html>
